@@ -40,6 +40,30 @@ Alternatively, you can recompile the entire firmware image; this will integrate 
 make V=s
 ```
 
+## GitHub Actions
+
+The `Build ImmortalWrt packages` workflow builds this project against the official
+ImmortalWrt 25.12.1 SDK. Start it manually from the Actions page and choose one
+of these targets:
+
+- `all`: build every supported target.
+- `x64`: build for `x86/64`.
+- `arm`: build for 64-bit ARM using `armsr/armv8`.
+
+Each target produces a GitHub Actions artifact containing the individual APK
+packages, SHA256 checksums, build metadata, and a self-extracting `.run`
+installer. The installer checks that it is running on the matching ImmortalWrt
+release and target before installing the bundled packages:
+
+```
+sha256sum -c SHA256SUMS
+sh openappfilter-*-immortalwrt-25.12.1-*.run
+```
+
+The kernel module is tied to the exact ImmortalWrt target and kernel ABI. Do not
+use the ARM artifact on other ARM targets such as `rockchip/armv8`; build a
+package for that specific target instead.
+
 ## Discussion Group
 
 [https://t.me/openappfilter](https://t.me/openappfilter) (Telegram)
@@ -54,4 +78,3 @@ If you encounter some issues during installation or usage, you can join the grou
 ## Star
 If you find this project helpful, please give it a star.  
 [![Stargazers over time](https://starchart.cc/destan19/OpenAppFilter.svg?variant=adaptive)](https://starchart.cc/destan19/OpenAppFilter)
-
