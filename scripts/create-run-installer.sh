@@ -145,7 +145,6 @@ cat > "$installer_header" <<EOF
 
 set -eu
 
-readonly REQUIRED_DISTRIBUTION='immortalwrt'
 readonly REQUIRED_RELEASE='$release'
 readonly REQUIRED_TARGET='$target'
 readonly REQUIRED_PLATFORM='$platform'
@@ -159,6 +158,20 @@ die() {
   exit 1
 }
 
+normalize_release_value() {
+  value=$1
+  while :; do
+    case "$value" in
+      [[:space:]]*) value=${value#?} ;;
+      *[[:space:]]) value=${value%?} ;;
+      \'*\') value=${value#\'}; value=${value%\'} ;;
+      \"*\") value=${value#\"}; value=${value%\"} ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$value"
+}
+
 if [ "$#" -ne 0 ]; then
   die "this installer does not accept arguments"
 fi
@@ -170,13 +183,18 @@ command -v apk >/dev/null 2>&1 || die "the apk package manager was not found"
 # The release file is provided by the installed ImmortalWrt system.
 . /etc/openwrt_release
 
-distribution=$(printf '%s' "${DISTRIB_ID:-}" | tr '[:upper:]' '[:lower:]')
-[ "$distribution" = "$REQUIRED_DISTRIBUTION" ] \
-  || die "expected ImmortalWrt, found ${DISTRIB_ID:-unknown}"
-[ "${DISTRIB_RELEASE:-}" = "$REQUIRED_RELEASE" ] \
-  || die "expected release $REQUIRED_RELEASE, found ${DISTRIB_RELEASE:-unknown}"
-[ "${DISTRIB_TARGET:-}" = "$REQUIRED_TARGET" ] \
-  || die "expected target $REQUIRED_TARGET, found ${DISTRIB_TARGET:-unknown}"
+distribution=$(normalize_release_value "${DISTRIB_ID:-}")
+installed_release=$(normalize_release_value "${DISTRIB_RELEASE:-}")
+installed_target=$(normalize_release_value "${DISTRIB_TARGET:-}")
+
+case "$distribution" in
+  [Ii][Mm][Mm][Oo][Rr][Tt][Aa][Ll][Ww][Rr][Tt]) ;;
+  *) die "expected ImmortalWrt, found '${distribution:-unknown}'" ;;
+esac
+[ "$installed_release" = "$REQUIRED_RELEASE" ] \
+  || die "expected release $REQUIRED_RELEASE, found '${installed_release:-unknown}'"
+[ "$installed_target" = "$REQUIRED_TARGET" ] \
+  || die "expected target $REQUIRED_TARGET, found '${installed_target:-unknown}'"
 
 machine=$(uname -m)
 case "$REQUIRED_PLATFORM:$machine" in
