@@ -53,7 +53,10 @@ of these targets:
 Each target produces a GitHub Actions artifact containing the individual APK
 packages, SHA256 checksums, build metadata, and a self-extracting `.run`
 installer. The installer checks that it is running on the matching ImmortalWrt
-release and target before installing the bundled packages:
+release and target, updates the APK package lists, then installs the bundled
+`kmod-oaf`, `appfilter`, and `luci-app-oaf` packages in that order with
+`apk add --allow-untrusted`. Any bundled LuCI translation package is installed
+after those three packages:
 
 ```
 sha256sum -c SHA256SUMS

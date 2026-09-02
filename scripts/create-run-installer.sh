@@ -226,8 +226,17 @@ while IFS= read -r package || [ -n "$package" ]; do
 done < "$temporary_dir/install-order"
 [ "$#" -gt 0 ] || die "no packages were found in the payload"
 
+echo "Updating package lists"
+apk update || die "package list update failed"
+
 echo "Installing $# OpenAppFilter packages"
-apk add --allow-untrusted "$@" || die "package installation failed"
+for package_path
+do
+  package_name=${package_path##*/}
+  echo "Installing $package_name"
+  apk add --allow-untrusted "$package_path" \
+    || die "package installation failed: $package_name"
+done
 
 echo "OpenAppFilter installation completed successfully."
 exit 0
