@@ -187,6 +187,14 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+          # ImmortalWrt 25.12 ships another open-app-filter source package.
+          # Remove it so the package index uses this repository's implementation.
+          ./scripts/feeds uninstall open-app-filter
+          if [[ -e package/feeds/packages/open-app-filter || -L package/feeds/packages/open-app-filter ]]; then
+            echo "::error::The feed-provided open-app-filter package is still installed"
+            exit 1
+          fi
+
           package_dir="$SDK_DIR/package/OpenAppFilter"
           mkdir -p "$package_dir"
           cp -a "$GITHUB_WORKSPACE/luci-app-oaf" "$package_dir/"
