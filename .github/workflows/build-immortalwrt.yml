@@ -1,6 +1,6 @@
 name: Build ImmortalWrt packages
 
-run-name: Build ImmortalWrt 25.12.1 (${{ inputs.platform }})
+run-name: Build ImmortalWrt 25.12.2 (${{ inputs.platform }})
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 env:
-  IMMORTALWRT_VERSION: 25.12.1
+  IMMORTALWRT_VERSION: 25.12.2
 
 jobs:
   select-platform:
