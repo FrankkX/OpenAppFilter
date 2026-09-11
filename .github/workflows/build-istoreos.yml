@@ -1,0 +1,327 @@
+name: Build iStoreOS OAF packages
+
+run-name: Build iStoreOS 25.12.5 (${{ inputs.platform }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Build target: x64=x86/64, arm=ARM64 armsr/armv8"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - x64
+          - arm
+
+permissions:
+  contents: read
+
+env:
+  OPENWRT_VERSION: 25.12.5
+
+jobs:
+  select-platform:
+    name: Select build targets
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - name: Create target matrix
+        id: targets
+        env:
+          SELECTED_PLATFORM: ${{ inputs.platform }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          x64='{"platform":"x64","target":"x86","subtarget":"64","target_label":"x86_64"}'
+          arm='{"platform":"arm","target":"armsr","subtarget":"armv8","target_label":"arm64"}'
+
+          case "$SELECTED_PLATFORM" in
+            all)
+              matrix="{\"include\":[$x64,$arm]}"
+              ;;
+            x64)
+              matrix="{\"include\":[$x64]}"
+              ;;
+            arm)
+              matrix="{\"include\":[$arm]}"
+              ;;
+            *)
+              echo "::error::Unsupported platform: $SELECTED_PLATFORM"
+              exit 1
+              ;;
+          esac
+
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: select-platform
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select-platform.outputs.matrix) }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            clang \
+            curl \
+            file \
+            flex \
+            bison \
+            g++ \
+            gawk \
+            gcc-multilib \
+            g++-multilib \
+            gettext \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python3-pyelftools \
+            python3-setuptools \
+            rsync \
+            swig \
+            unzip \
+            wget \
+            zlib1g-dev \
+            zstd
+
+      - name: Download OpenWrt SDK
+        id: sdk
+        env:
+          TARGET: ${{ matrix.target }}
+          SUBTARGET: ${{ matrix.subtarget }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base_url="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET}/${SUBTARGET}"
+          download_dir="${RUNNER_TEMP}/openwrt-sdk-${TARGET}-${SUBTARGET}"
+          mkdir -p "$download_dir"
+          cd "$download_dir"
+
+          curl --fail --location --retry 5 --retry-delay 5 --output sha256sums "${base_url}/sha256sums"
+
+          mapfile -t sdk_files < <(
+            awk '
+              {
+                file = $2
+                sub(/^\*/, "", file)
+                if (file ~ /^openwrt-sdk-/ && file ~ /\.Linux-x86_64\.tar\.zst$/) {
+                  print file
+                }
+              }
+            ' sha256sums
+          )
+
+          if [[ "${#sdk_files[@]}" -ne 1 ]]; then
+            echo "::error::Expected one SDK archive, found ${#sdk_files[@]} at ${base_url}"
+            exit 1
+          fi
+
+          sdk_file="${sdk_files[0]}"
+          sdk_sha256="$(
+            awk -v expected="$sdk_file" '
+              {
+                file = $2
+                sub(/^\*/, "", file)
+                if (file == expected) {
+                  print $1
+                }
+              }
+            ' sha256sums
+          )"
+
+          [[ -n "$sdk_sha256" ]] || {
+            echo "::error::Unable to read the SDK checksum for $sdk_file"
+            exit 1
+          }
+
+          printf '%s  %s\n' "$sdk_sha256" "$sdk_file" > sdk.sha256
+          curl --fail --location --retry 5 --retry-delay 5 --output "$sdk_file" "${base_url}/${sdk_file}"
+          sha256sum --check sdk.sha256
+
+          tar --use-compress-program=unzstd --extract --file "$sdk_file"
+
+          mapfile -t sdk_dirs < <(find "$download_dir" -mindepth 1 -maxdepth 1 -type d -name 'openwrt-sdk-*' -print)
+          if [[ "${#sdk_dirs[@]}" -ne 1 ]]; then
+            echo "::error::Expected one extracted SDK directory, found ${#sdk_dirs[@]}"
+            exit 1
+          fi
+
+          echo "path=${sdk_dirs[0]}" >> "$GITHUB_OUTPUT"
+          echo "file=$sdk_file" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sdk_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Install feeds and OAF source
+        env:
+          SDK_DIR: ${{ steps.sdk.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SDK_DIR"
+
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+          # 卸载 Feed 中自带的 open-app-filter，防止冲突
+          ./scripts/feeds uninstall open-app-filter || true
+          ./scripts/feeds uninstall luci-app-oaf || true
+
+          package_dir="$SDK_DIR/package/OpenAppFilter"
+          mkdir -p "$package_dir"
+          [ -d "$GITHUB_WORKSPACE/luci-app-oaf" ] && cp -a "$GITHUB_WORKSPACE/luci-app-oaf" "$package_dir/"
+          [ -d "$GITHUB_WORKSPACE/oaf" ] && cp -a "$GITHUB_WORKSPACE/oaf" "$package_dir/"
+          [ -d "$GITHUB_WORKSPACE/open-app-filter" ] && cp -a "$GITHUB_WORKSPACE/open-app-filter" "$package_dir/"
+
+      - name: Configure packages
+        env:
+          SDK_DIR: ${{ steps.sdk.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SDK_DIR"
+
+          cat >> .config <<'EOF'
+          CONFIG_PACKAGE_appfilter=m
+          CONFIG_PACKAGE_kmod-oaf=m
+          CONFIG_PACKAGE_luci-app-oaf=m
+          CONFIG_PACKAGE_luci-i18n-oaf-zh-cn=m
+          EOF
+          make defconfig
+
+          for symbol in \
+            CONFIG_PACKAGE_appfilter \
+            CONFIG_PACKAGE_kmod-oaf \
+            CONFIG_PACKAGE_luci-app-oaf \
+            CONFIG_PACKAGE_luci-i18n-oaf-zh-cn
+          do
+            if ! grep -Eq "^${symbol}=[my]$" .config; then
+              echo "::error::${symbol} was not enabled by make defconfig"
+              exit 1
+            fi
+          done
+
+      - name: Compile APK packages
+        env:
+          SDK_DIR: ${{ steps.sdk.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SDK_DIR"
+
+          make \
+            --jobs="$(nproc)" \
+            V=s \
+            package/OpenAppFilter/oaf/compile \
+            package/OpenAppFilter/open-app-filter/compile \
+            package/OpenAppFilter/luci-app-oaf/compile
+
+      - name: Assemble APK artifacts
+        id: artifacts
+        env:
+          SDK_DIR: ${{ steps.sdk.outputs.path }}
+          SDK_FILE: ${{ steps.sdk.outputs.file }}
+          SDK_SHA256: ${{ steps.sdk.outputs.sha256 }}
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+          SUBTARGET: ${{ matrix.subtarget }}
+          TARGET_LABEL: ${{ matrix.target_label }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact_dir="$GITHUB_WORKSPACE/dist/$PLATFORM"
+          apk_dir="$artifact_dir/apk"
+          mkdir -p "$apk_dir"
+
+          # 提取所有的 .apk 编译文件
+          while IFS= read -r -d '' package; do
+            cp "$package" "$apk_dir/"
+          done < <(
+            find "$SDK_DIR/bin" -type f \
+              \( \
+                -name 'appfilter-*.apk' -o \
+                -name 'kmod-oaf-*.apk' -o \
+                -name 'luci-app-oaf-*.apk' -o \
+                -name 'luci-i18n-oaf-*.apk' \
+              \) \
+              -print0
+          )
+
+          shopt -s nullglob
+          for pattern in \
+            'appfilter-*.apk' \
+            'kmod-oaf-*.apk' \
+            'luci-app-oaf-*.apk' \
+            'luci-i18n-oaf-zh-cn*.apk'
+          do
+            matches=("$apk_dir"/$pattern)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "::error::Expected exactly one $pattern package, found ${#matches[@]}"
+              exit 1
+            fi
+          done
+
+          oaf_version="$(
+            awk -F ':=' '/^PKG_VERSION:=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' \
+              "$GITHUB_WORKSPACE/open-app-filter/Makefile" || echo "unknown"
+          )"
+
+          # 支持生成可选的离线一键安装 .run 包
+          if [ -f "$GITHUB_WORKSPACE/scripts/create-run-installer.sh" ]; then
+            run_file="openappfilter-${oaf_version}-istoreos-${OPENWRT_VERSION}-${TARGET_LABEL}.run"
+            SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --format=%ct)" \
+              "$GITHUB_WORKSPACE/scripts/create-run-installer.sh" \
+                --input "$apk_dir" \
+                --output "$artifact_dir/$run_file" \
+                --platform "$PLATFORM" \
+                --release "$OPENWRT_VERSION" \
+                --target "$TARGET/$SUBTARGET" || true
+          fi
+
+          {
+            echo "Project: OpenAppFilter"
+            echo "Project version: $oaf_version"
+            echo "Project commit: $GITHUB_SHA"
+            echo "Base OpenWrt release: $OPENWRT_VERSION"
+            echo "Target: $TARGET/$SUBTARGET"
+            echo "SDK archive: $SDK_FILE"
+            echo "SDK SHA256: $SDK_SHA256"
+            echo
+            echo "Packages:"
+            find "$apk_dir" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
+          } > "$artifact_dir/build-info.txt"
+
+          (
+            cd "$artifact_dir"
+            find . -type f ! -name SHA256SUMS -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+          )
+
+          echo "path=$artifact_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openappfilter-istoreos-25.12.5-${{ matrix.platform }}
+          path: ${{ steps.artifacts.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
