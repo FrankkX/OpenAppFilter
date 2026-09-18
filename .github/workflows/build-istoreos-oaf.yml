@@ -39,24 +39,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 -b istoreos-25.12 https://github.com/istoreos/istoreos.git istoreos_src
+          git clone --depth 1 --single-branch -b istoreos-25.12 https://github.com/istoreos/istoreos.git istoreos_src
 
-      - name: Update and Install Feeds
+      - name: Update and Install Feeds & Source
         shell: bash
         run: |
           set -euo pipefail
           cd istoreos_src
           
-          # 使用 iStoreOS 官方 feeds.conf.default
+          # 1. 更新与安装 iStoreOS 官方 feeds 依赖
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-          # 引入当前仓库中的 OAF 源码
+          # 2. 将 OAF 源码放置到 package/OpenAppFilter 目录下
           package_dir="package/OpenAppFilter"
           mkdir -p "$package_dir"
-          [ -d "$GITHUB_WORKSPACE/luci-app-oaf" ] && cp -a "$GITHUB_WORKSPACE/luci-app-oaf" "$package_dir/"
-          [ -d "$GITHUB_WORKSPACE/oaf" ] && cp -a "$GITHUB_WORKSPACE/oaf" "$package_dir/"
-          [ -d "$GITHUB_WORKSPACE/open-app-filter" ] && cp -a "$GITHUB_WORKSPACE/open-app-filter" "$package_dir/"
+
+          if [ -d "$GITHUB_WORKSPACE/luci-app-oaf" ]; then cp -a "$GITHUB_WORKSPACE/luci-app-oaf" "$package_dir/"; fi
+          if [ -d "$GITHUB_WORKSPACE/oaf" ]; then cp -a "$GITHUB_WORKSPACE/oaf" "$package_dir/"; fi
+          if [ -d "$GITHUB_WORKSPACE/open-app-filter" ]; then cp -a "$GITHUB_WORKSPACE/open-app-filter" "$package_dir/"; fi
+          
+          # 如果仓库根目录本身就包含 OAF 的 Makefile
+          if [ -f "$GITHUB_WORKSPACE/Makefile" ] && [ ! -d "$package_dir/open-app-filter" ]; then
+            cp -a "$GITHUB_WORKSPACE" "$package_dir/open-app-filter"
+          fi
 
       - name: Configure & Generate Toolchain
         shell: bash
@@ -64,10 +70,13 @@ jobs:
           set -euo pipefail
           cd istoreos_src
 
-          # 载入 x86/64 默认配置
+          # 加载 x86/64 目标默认配置
           target_config="target/linux/x86/config-6.12"
-          [ -f "$target_config" ] && cat "$target_config" > .config
+          if [ -f "$target_config" ]; then
+            cat "$target_config" > .config
+          fi
 
+          # 写入构建 OAF 所需的宏开关
           cat >> .config <<EOF
           CONFIG_TARGET_x86=y
           CONFIG_TARGET_x86_64=y
@@ -77,6 +86,7 @@ jobs:
           CONFIG_PACKAGE_luci-i18n-oaf-zh-cn=m
           EOF
 
+          # 自动计算补全依赖与编译符号表
           make defconfig
 
       - name: Compile OAF Packages
@@ -85,8 +95,18 @@ jobs:
           set -euo pipefail
           cd istoreos_src
 
-          # 仅编译 OAF 模块与其内核依赖
-          make package/OpenAppFilter/compile V=s -j$(nproc)
+          # 动态查找 package/OpenAppFilter 目录下包含 Makefile 的子目录并依次编译
+          found_pkg=0
+          for pkg_dir in $(find package/OpenAppFilter -mindepth 1 -maxdepth 3 -name Makefile -exec dirname {} \;); do
+            echo "::notice::Found package to compile: $pkg_dir"
+            make "${pkg_dir}/compile" V=s -j$(nproc)
+            found_pkg=1
+          done
+
+          if [ "$found_pkg" -eq 0 ]; then
+            echo "::error::No Makefile found in package/OpenAppFilter directory!"
+            exit 1
+          fi
 
       - name: Organize Artifacts
         id: artifacts
@@ -96,7 +116,14 @@ jobs:
           artifact_dir="$GITHUB_WORKSPACE/dist/x64"
           mkdir -p "$artifact_dir"
 
+          # 收集编译产出的 apk / ipk 文件
           find istoreos_src/bin/ -type f \( -name '*.apk' -o -name '*.ipk' \) -exec cp {} "$artifact_dir/" \;
+
+          # 生成校验和
+          (
+            cd "$artifact_dir"
+            sha256sum * > SHA256SUMS 2>/dev/null || true
+          )
 
           echo "path=$artifact_dir" >> "$GITHUB_OUTPUT"
 
