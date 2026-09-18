@@ -89,15 +89,18 @@ jobs:
           # 自动计算补全依赖与编译符号表
           make defconfig
 
-      - name: Build Host Tools & Toolchain
+      - name: Prepare Kernel & Toolchain
         shell: bash
         run: |
           set -euo pipefail
           cd istoreos_src
 
-          # 构建基础 host 工具与 toolchain（解决 staging_dir/host 缺乏工具报错）
+          # 构建基础 host 工具与 toolchain
           make tools/install V=s -j$(nproc)
           make toolchain/install V=s -j$(nproc)
+
+          # 编译 Linux 内核基础设施（生成 modules.builtin 等必备文件）
+          make target/linux/compile V=s -j$(nproc)
 
       - name: Compile OAF Packages
         shell: bash
