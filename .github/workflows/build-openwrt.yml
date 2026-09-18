@@ -18,9 +18,6 @@ on:
 permissions:
   contents: read
 
-# ========================================================
-# 后续如果 OpenWrt 推出新版本，只需修改下方这一行版本号即可！
-# ========================================================
 env:
   OPENWRT_VERSION: 25.12.5
 
@@ -180,14 +177,19 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          # 仅更新并安装最小必要的 Feeds，避免无用插件引发 Kconfig 递归依赖死循环
+          ./scripts/feeds update base packages luci
+          ./scripts/feeds install -a -p base
+          ./scripts/feeds install -a -p packages
+          ./scripts/feeds install -a -p luci
 
-          # 卸载 Feed 自带的 OpenAppFilter 防止源码重名冲突
+          # 卸载 Feed 中自带的 OAF，防止与自定义源码冲突
           ./scripts/feeds uninstall open-app-filter || true
           ./scripts/feeds uninstall luci-app-oaf || true
           ./scripts/feeds uninstall oaf || true
+          rm -rf package/feeds/packages/open-app-filter package/feeds/luci/luci-app-oaf
 
+          # 复制应用源码到 SDK package 路径
           package_dir="$SDK_DIR/package/OpenAppFilter"
           mkdir -p "$package_dir"
           [ -d "$GITHUB_WORKSPACE/luci-app-oaf" ] && cp -a "$GITHUB_WORKSPACE/luci-app-oaf" "$package_dir/"
@@ -207,6 +209,7 @@ jobs:
           CONFIG_PACKAGE_kmod-oaf=m
           CONFIG_PACKAGE_luci-app-oaf=m
           CONFIG_PACKAGE_luci-i18n-oaf-zh-cn=m
+          CONFIG_PACKAGE_nginx=n
           EOF
           make defconfig
 
@@ -230,10 +233,8 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          make \
-            --jobs="$(nproc)" \
-            V=s \
-            package/OpenAppFilter/compile || make --jobs=1 V=s package/OpenAppFilter/compile
+          # 全局编译 .config 中选择的包，消除 Makefile 路径名称不匹配的问题
+          make -j$(nproc) V=s package/compile
 
       - name: Assemble APK and RUN artifacts
         id: artifacts
@@ -283,16 +284,20 @@ jobs:
           oaf_version="unknown"
           if [ -f "$GITHUB_WORKSPACE/open-app-filter/Makefile" ]; then
             oaf_version="$(awk -F ':=' '/^PKG_VERSION:=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$GITHUB_WORKSPACE/open-app-filter/Makefile")"
+          elif [ -f "$GITHUB_WORKSPACE/Makefile" ]; then
+            oaf_version="$(awk -F ':=' '/^PKG_VERSION:=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$GITHUB_WORKSPACE/Makefile")"
           fi
 
           run_file="openappfilter-${oaf_version}-openwrt-${OPENWRT_VERSION}-${TARGET_LABEL}.run"
-          SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --format=%ct)" \
-            "$GITHUB_WORKSPACE/scripts/create-run-installer-openwrt.sh" \
-              --input "$apk_dir" \
-              --output "$artifact_dir/$run_file" \
-              --platform "$PLATFORM" \
-              --release "$OPENWRT_VERSION" \
-              --target "$TARGET/$SUBTARGET"
+          if [ -f "$GITHUB_WORKSPACE/scripts/create-run-installer.sh" ]; then
+            SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --format=%ct)" \
+              "$GITHUB_WORKSPACE/scripts/create-run-installer-openwrt.sh" \
+                --input "$apk_dir" \
+                --output "$artifact_dir/$run_file" \
+                --platform "$PLATFORM" \
+                --release "$OPENWRT_VERSION" \
+                --target "$TARGET/$SUBTARGET"
+          fi
 
           {
             echo "Project: OpenAppFilter"
