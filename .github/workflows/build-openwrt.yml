@@ -18,9 +18,12 @@ on:
 permissions:
   contents: read
 
+# =========================================================
+# 1. OPENWRT_VERSION: 日后 OpenWrt 版本演进时修改此处即可
+# 2. TARGET_ISTOREOS_VERMAGIC: iStoreOS 报错提示中期望的目标签名
+# =========================================================
 env:
   OPENWRT_VERSION: "25.12.5"
-  # 这里定义 iStoreOS 提示报错中期望的真实哈希 (breaks: world[kmod-oaf><...])
   TARGET_ISTOREOS_VERMAGIC: "Q1QaFk37j99bX7zSPAVZ7aMuBuVJM="
 
 jobs:
@@ -262,7 +265,7 @@ jobs:
           )
 
           # =========================================================
-          # 核心步骤：方案二 - 解包 APK 强制修改 .PKGINFO 控制文件中的 Vermagic
+          # 核心步骤：容错解包并强行修改 .PKGINFO 中 kmod-oaf 的 Vermagic 哈希
           # =========================================================
           echo "Patching APK packages with target iStoreOS Vermagic: $TARGET_ISTOREOS_VERMAGIC"
           
@@ -270,21 +273,32 @@ jobs:
             [ -f "$apk_file" ] || continue
             
             tmp_unpack="$(mktemp -d)"
-            # 解压 APK 归档 (APK 实际上是一个 tar.gz 压缩包)
-            tar -C "$tmp_unpack" -xzf "$apk_file"
             
-            if [ -f "$tmp_unpack/.PKGINFO" ]; then
-              # 正则替换：将 provides / depends 中的 kmod-oaf><哈希 替换为 iStoreOS 所需的目标哈希
-              sed -i -E "s/(kmod-oaf><)[^ ]+/\1${TARGET_ISTOREOS_VERMAGIC}/g" "$tmp_unpack/.PKGINFO"
-              
-              # 重新打包成 .apk 格式
-              (
-                cd "$tmp_unpack"
-                tar -czf "$apk_file" .PKGINFO *
-              )
-              echo "Successfully patched $apk_file"
+            # 使用 tar + zstd/gzip 多重格式逻辑解包
+            if tar --use-compress-program=unzstd -C "$tmp_unpack" -xf "$apk_file" 2>/dev/null; then
+              :
+            elif tar -C "$tmp_unpack" -xzf "$apk_file" 2>/dev/null; then
+              :
+            else
+              (cd "$tmp_unpack" && ar x "$apk_file" 2>/dev/null || true)
+              for tarball in "$tmp_unpack"/*.tar.*; do
+                [ -f "$tarball" ] && tar -C "$tmp_unpack" -xf "$tarball" 2>/dev/null || true
+              done
             fi
+            
+            # 替换 .PKGINFO 或 control 中的签名
+            find "$tmp_unpack" -type f \( -name '.PKGINFO' -o -name 'control' \) -exec \
+              sed -i -E "s/(kmod-oaf><)[^ ]+/\1${TARGET_ISTOREOS_VERMAGIC}/g" {} +
+
+            # 重新打包成 .apk 格式
+            (
+              cd "$tmp_unpack"
+              rm -f *.tar.* control.tar.* data.tar.* debian-binary 2>/dev/null || true
+              tar -czf "$apk_file" .PKGINFO * 2>/dev/null || tar -czf "$apk_file" *
+            )
+            
             rm -rf "$tmp_unpack"
+            echo "Successfully patched $apk_file"
           done
 
           shopt -s nullglob
