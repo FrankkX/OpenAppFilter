@@ -1,0 +1,108 @@
+name: Build OAF for iStoreOS 25.12
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Build target: x64=x86/64"
+        required: true
+        default: x64
+        type: choice
+        options:
+          - x64
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build OAF on iStoreOS 25.12 Source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out OAF source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential clang curl file flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libelf-dev \
+            libncurses-dev libssl-dev python3 python3-pyelftools \
+            python3-setuptools rsync swig unzip wget zlib1g-dev zstd
+
+      - name: Clone iStoreOS Source Code
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 -b istoreos-25.12 https://github.com/istoreos/istoreos.git istoreos_src
+
+      - name: Update and Install Feeds
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd istoreos_src
+          
+          # 使用 iStoreOS 官方 feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+          # 引入当前仓库中的 OAF 源码
+          package_dir="package/OpenAppFilter"
+          mkdir -p "$package_dir"
+          [ -d "$GITHUB_WORKSPACE/luci-app-oaf" ] && cp -a "$GITHUB_WORKSPACE/luci-app-oaf" "$package_dir/"
+          [ -d "$GITHUB_WORKSPACE/oaf" ] && cp -a "$GITHUB_WORKSPACE/oaf" "$package_dir/"
+          [ -d "$GITHUB_WORKSPACE/open-app-filter" ] && cp -a "$GITHUB_WORKSPACE/open-app-filter" "$package_dir/"
+
+      - name: Configure & Generate Toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd istoreos_src
+
+          # 载入 x86/64 默认配置
+          target_config="target/linux/x86/config-6.12"
+          [ -f "$target_config" ] && cat "$target_config" > .config
+
+          cat >> .config <<EOF
+          CONFIG_TARGET_x86=y
+          CONFIG_TARGET_x86_64=y
+          CONFIG_PACKAGE_appfilter=m
+          CONFIG_PACKAGE_kmod-oaf=m
+          CONFIG_PACKAGE_luci-app-oaf=m
+          CONFIG_PACKAGE_luci-i18n-oaf-zh-cn=m
+          EOF
+
+          make defconfig
+
+      - name: Compile OAF Packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd istoreos_src
+
+          # 仅编译 OAF 模块与其内核依赖
+          make package/OpenAppFilter/compile V=s -j$(nproc)
+
+      - name: Organize Artifacts
+        id: artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_dir="$GITHUB_WORKSPACE/dist/x64"
+          mkdir -p "$artifact_dir"
+
+          find istoreos_src/bin/ -type f \( -name '*.apk' -o -name '*.ipk' \) -exec cp {} "$artifact_dir/" \;
+
+          echo "path=$artifact_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: oaf-istoreos-25.12-x64
+          path: ${{ steps.artifacts.outputs.path }}
+          if-no-files-found: error
