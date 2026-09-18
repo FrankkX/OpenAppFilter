@@ -18,13 +18,8 @@ on:
 permissions:
   contents: read
 
-# =========================================================
-# 1. OPENWRT_VERSION: 日后 OpenWrt 版本演进时修改此处即可
-# 2. TARGET_ISTOREOS_VERMAGIC: iStoreOS 报错提示中期望的目标签名
-# =========================================================
 env:
-  OPENWRT_VERSION: "25.12.5"
-  TARGET_ISTOREOS_VERMAGIC: "Q1QaFk37j99bX7zSPAVZ7aMuBuVJM="
+  OPENWRT_VERSION: 25.12.5
 
 jobs:
   select-platform:
@@ -40,10 +35,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           x64='{"platform":"x64","target":"x86","subtarget":"64","target_label":"x86_64"}'
           arm='{"platform":"arm","target":"armsr","subtarget":"armv8","target_label":"arm64"}'
-
           case "$SELECTED_PLATFORM" in
             all)
               matrix="{\"include\":[$x64,$arm]}"
@@ -59,9 +52,7 @@ jobs:
               exit 1
               ;;
           esac
-
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-
   build:
     name: Build ${{ matrix.platform }}
     needs: select-platform
@@ -101,12 +92,10 @@ jobs:
             python3-setuptools \
             rsync \
             swig \
-            tar \
             unzip \
             wget \
             zlib1g-dev \
             zstd
-
       - name: Download OpenWrt SDK
         id: sdk
         env:
@@ -115,14 +104,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           base_url="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET}/${SUBTARGET}"
           download_dir="${RUNNER_TEMP}/openwrt-sdk-${TARGET}-${SUBTARGET}"
           mkdir -p "$download_dir"
           cd "$download_dir"
-
           curl --fail --location --retry 5 --retry-delay 5 --output sha256sums "${base_url}/sha256sums"
-
           mapfile -t sdk_files < <(
             awk '
               {
@@ -138,7 +124,6 @@ jobs:
             echo "::error::Expected one SDK archive, found ${#sdk_files[@]} at ${base_url}"
             exit 1
           fi
-
           sdk_file="${sdk_files[0]}"
           sdk_sha256="$(
             awk -v expected="$sdk_file" '
@@ -158,23 +143,19 @@ jobs:
           printf '%s  %s\n' "$sdk_sha256" "$sdk_file" > sdk.sha256
           curl --fail --location --retry 5 --retry-delay 5 --output "$sdk_file" "${base_url}/${sdk_file}"
           sha256sum --check sdk.sha256
-
           if [[ "$sdk_file" == *.zst ]]; then
             tar --use-compress-program=unzstd --extract --file "$sdk_file"
           else
             tar -xf "$sdk_file"
           fi
-
           mapfile -t sdk_dirs < <(find "$download_dir" -mindepth 1 -maxdepth 1 -type d -name 'openwrt-sdk-*' -print)
           if [[ "${#sdk_dirs[@]}" -ne 1 ]]; then
             echo "::error::Expected one extracted SDK directory, found ${#sdk_dirs[@]}"
             exit 1
           fi
-
           echo "path=${sdk_dirs[0]}" >> "$GITHUB_OUTPUT"
           echo "file=$sdk_file" >> "$GITHUB_OUTPUT"
           echo "sha256=$sdk_sha256" >> "$GITHUB_OUTPUT"
-
       - name: Install feeds and OAF source
         env:
           SDK_DIR: ${{ steps.sdk.outputs.path }}
@@ -182,35 +163,33 @@ jobs:
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
-
           ./scripts/feeds update base packages luci
           ./scripts/feeds install -a -p base
           ./scripts/feeds install -a -p luci
-
           ./scripts/feeds uninstall open-app-filter || true
           ./scripts/feeds uninstall luci-app-oaf || true
           ./scripts/feeds uninstall oaf || true
           rm -rf package/feeds/packages/open-app-filter package/feeds/luci/luci-app-oaf
-
           package_dir="$SDK_DIR/package/OpenAppFilter"
           mkdir -p "$package_dir"
           [ -d "$GITHUB_WORKSPACE/luci-app-oaf" ] && cp -a "$GITHUB_WORKSPACE/luci-app-oaf" "$package_dir/"
           [ -d "$GITHUB_WORKSPACE/oaf" ] && cp -a "$GITHUB_WORKSPACE/oaf" "$package_dir/"
           [ -d "$GITHUB_WORKSPACE/open-app-filter" ] && cp -a "$GITHUB_WORKSPACE/open-app-filter" "$package_dir/"
-
       - name: Configure packages
         env:
           SDK_DIR: ${{ steps.sdk.outputs.path }}
-          TARGET: ${{ matrix.target }}
-          SUBTARGET: ${{ matrix.subtarget }}
         shell: bash
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
-
-          buildinfo_url="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET}/${SUBTARGET}/config.buildinfo"
-          curl --fail --location --retry 5 --retry-delay 5 -o .config "$buildinfo_url"
-
+          # 提取 SDK 原厂 vermagic 签名，防止 make defconfig 时因加载外部依赖重新计算 Hash
+          VERMAGIC=""
+          if [ -f include/kernel-version.mk ]; then
+            VERMAGIC="$(grep -E '^STAMP_BUILT' include/kernel-version.mk | awk '{print $3}' || true)"
+          fi
+          if [ -z "$VERMAGIC" ] && [ -f .config ]; then
+            VERMAGIC="$(sed -ne 's/^CONFIG_EXTERNAL_KERNEL_TREE_VERMAGIC="\(.*\)"$/\1/p' .config || true)"
+          fi
           cat >> .config <<EOF
           CONFIG_PACKAGE_appfilter=m
           CONFIG_PACKAGE_kmod-oaf=m
@@ -218,9 +197,11 @@ jobs:
           CONFIG_PACKAGE_luci-i18n-oaf-zh-cn=m
           CONFIG_PACKAGE_nginx=n
           EOF
-
+          if [ -n "$VERMAGIC" ]; then
+            echo "CONFIG_EXTERNAL_KERNEL_TREE_VERMAGIC=\"$VERMAGIC\"" >> .config
+            echo "Locking kernel vermagic to: $VERMAGIC"
+          fi
           make defconfig
-
       - name: Compile APK packages
         env:
           SDK_DIR: ${{ steps.sdk.outputs.path }}
@@ -228,12 +209,10 @@ jobs:
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
-
           for pkg in $(find package/OpenAppFilter -mindepth 1 -maxdepth 2 -name Makefile -exec dirname {} \;); do
             make -j$(nproc) V=s "${pkg}/compile"
           done
-
-      - name: Assemble APK and Patch Vermagic
+      - name: Assemble APK and RUN artifacts
         id: artifacts
         env:
           SDK_DIR: ${{ steps.sdk.outputs.path }}
@@ -246,11 +225,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           artifact_dir="$GITHUB_WORKSPACE/dist/$PLATFORM"
           apk_dir="$artifact_dir/apk"
           mkdir -p "$apk_dir"
-
           while IFS= read -r -d '' package; do
             cp "$package" "$apk_dir/"
           done < <(
@@ -263,44 +240,6 @@ jobs:
               \) \
               -print0
           )
-
-          # =========================================================
-          # 核心步骤：容错解包并强行修改 .PKGINFO 中 kmod-oaf 的 Vermagic 哈希
-          # =========================================================
-          echo "Patching APK packages with target iStoreOS Vermagic: $TARGET_ISTOREOS_VERMAGIC"
-          
-          for apk_file in "$apk_dir"/*.apk; do
-            [ -f "$apk_file" ] || continue
-            
-            tmp_unpack="$(mktemp -d)"
-            
-            # 使用 tar + zstd/gzip 多重格式逻辑解包
-            if tar --use-compress-program=unzstd -C "$tmp_unpack" -xf "$apk_file" 2>/dev/null; then
-              :
-            elif tar -C "$tmp_unpack" -xzf "$apk_file" 2>/dev/null; then
-              :
-            else
-              (cd "$tmp_unpack" && ar x "$apk_file" 2>/dev/null || true)
-              for tarball in "$tmp_unpack"/*.tar.*; do
-                [ -f "$tarball" ] && tar -C "$tmp_unpack" -xf "$tarball" 2>/dev/null || true
-              done
-            fi
-            
-            # 替换 .PKGINFO 或 control 中的签名
-            find "$tmp_unpack" -type f \( -name '.PKGINFO' -o -name 'control' \) -exec \
-              sed -i -E "s/(kmod-oaf><)[^ ]+/\1${TARGET_ISTOREOS_VERMAGIC}/g" {} +
-
-            # 重新打包成 .apk 格式
-            (
-              cd "$tmp_unpack"
-              rm -f *.tar.* control.tar.* data.tar.* debian-binary 2>/dev/null || true
-              tar -czf "$apk_file" .PKGINFO * 2>/dev/null || tar -czf "$apk_file" *
-            )
-            
-            rm -rf "$tmp_unpack"
-            echo "Successfully patched $apk_file"
-          done
-
           shopt -s nullglob
           for pattern in \
             'appfilter-*.apk' \
@@ -314,23 +253,19 @@ jobs:
               exit 1
             fi
           done
-
           oaf_version="unknown"
           if [ -f "$GITHUB_WORKSPACE/open-app-filter/Makefile" ]; then
             oaf_version="$(awk -F ':=' '/^PKG_VERSION:=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$GITHUB_WORKSPACE/open-app-filter/Makefile")"
           elif [ -f "$GITHUB_WORKSPACE/Makefile" ]; then
             oaf_version="$(awk -F ':=' '/^PKG_VERSION:=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$GITHUB_WORKSPACE/Makefile")"
           fi
-
           run_file="openappfilter-${oaf_version}-openwrt-${OPENWRT_VERSION}-${TARGET_LABEL}.run"
-
           installer_script=""
           if [ -f "$GITHUB_WORKSPACE/scripts/create-run-installer-openwrt.sh" ]; then
             installer_script="$GITHUB_WORKSPACE/scripts/create-run-installer-openwrt.sh"
           elif [ -f "$GITHUB_WORKSPACE/scripts/create-run-installer.sh" ]; then
             installer_script="$GITHUB_WORKSPACE/scripts/create-run-installer.sh"
           fi
-
           if [ -n "$installer_script" ]; then
             SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --format=%ct)" \
               bash "$installer_script" \
@@ -340,30 +275,25 @@ jobs:
                 --release "$OPENWRT_VERSION" \
                 --target "$TARGET/$SUBTARGET"
           fi
-
           {
             echo "Project: OpenAppFilter"
             echo "Project version: $oaf_version"
             echo "Project commit: $GITHUB_SHA"
             echo "OpenWrt release: $OPENWRT_VERSION"
             echo "OpenWrt target: $TARGET/$SUBTARGET"
-            echo "Patched Vermagic: $TARGET_ISTOREOS_VERMAGIC"
             echo "SDK archive: $SDK_FILE"
             echo "SDK SHA256: $SDK_SHA256"
             echo
             echo "Packages:"
             find "$apk_dir" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort
           } > "$artifact_dir/build-info.txt"
-
           (
             cd "$artifact_dir"
             find . -type f ! -name SHA256SUMS -print0 \
               | sort -z \
               | xargs -0 sha256sum > SHA256SUMS
           )
-
           echo "path=$artifact_dir" >> "$GITHUB_OUTPUT"
-
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
