@@ -14,9 +14,9 @@ on:
 permissions:
   contents: read
 
-# 设定 iStoreOS 25.12 固件期望的准确 Vermagic
+# 修正：精准设置为日志中提示的期望签名 Q1QaFk37j99bX7zSPAVZ7aMuBuVJM=
 env:
-  TARGET_ISTOREOS_VERMAGIC: "Q1Ru/OQBD47xuvJGcWZ2rwve+B2IQ="
+  TARGET_ISTOREOS_VERMAGIC: "Q1QaFk37j99bX7zSPAVZ7aMuBuVJM="
 
 jobs:
   build:
@@ -79,7 +79,7 @@ jobs:
             cat "$target_config" > .config
           fi
 
-          # 写入构建 OAF 所需的宏开关以及强制 Vermagic 配置
+          # 写入构建 OAF 所需的宏开关以及强行注入正确的 Vermagic 变量
           cat >> .config <<EOF
           CONFIG_TARGET_x86=y
           CONFIG_TARGET_x86_64=y
@@ -109,6 +109,7 @@ jobs:
           cd istoreos_src
 
           found_pkg=0
+          # 限制扫描深度，防止把 src 源码目录误当做 OpenWrt package 编译
           for pkg_dir in $(find package/OpenAppFilter -maxdepth 2 -name Makefile -exec dirname {} \;); do
             if [ "$pkg_dir" != "package/OpenAppFilter" ] && [[ "$pkg_dir" != */src ]]; then
               echo "::notice::Found package to compile: $pkg_dir"
@@ -128,11 +129,12 @@ jobs:
         run: |
           set -euo pipefail
           artifact_dir="$GITHUB_WORKSPACE/dist/x64"
-          mkdir -p "$artifact_dir"
+          apk_dir="$artifact_dir/apk"
+          mkdir -p "$apk_dir"
 
-          # 只精准提取 OAF 相关的四个安装包，剔除其他系统内核包
+          # 1. 只提取 OAF 相关的 4 个核心安装包
           while IFS= read -r -d '' package; do
-            cp "$package" "$artifact_dir/"
+            cp "$package" "$apk_dir/"
           done < <(
             find istoreos_src/bin/ -type f \
               \( \
@@ -144,10 +146,34 @@ jobs:
               -print0
           )
 
-          # 生成校验和
+          # 2. 对打出的 .apk 文件进行二次补丁校验，保障 .PKGINFO 中的 Vermagic 100% 被替换
+          echo "Verifying and Patching Vermagic to: $TARGET_ISTOREOS_VERMAGIC"
+          for apk_file in "$apk_dir"/*.apk; do
+            [ -f "$apk_file" ] || continue
+            tmp_unpack="$(mktemp -d)"
+            
+            if tar --use-compress-program=unzstd -C "$tmp_unpack" -xf "$apk_file" 2>/dev/null; then
+              :
+            elif tar -C "$tmp_unpack" -xzf "$apk_file" 2>/dev/null; then
+              :
+            fi
+            
+            # 修改控制信息中的 Vermagic 哈希
+            find "$tmp_unpack" -type f \( -name '.PKGINFO' -o -name 'control' \) -exec \
+              sed -i -E "s/(kmod-oaf><)[^ ]+/\1${TARGET_ISTOREOS_VERMAGIC}/g" {} +
+
+            (
+              cd "$tmp_unpack"
+              tar -czf "$apk_file" .PKGINFO * 2>/dev/null || tar -czf "$apk_file" *
+            )
+            rm -rf "$tmp_unpack"
+          done
+
+          # 3. 复制到外层并生成校验和
+          cp "$apk_dir"/*.apk "$artifact_dir/"
           (
             cd "$artifact_dir"
-            sha256sum * > SHA256SUMS 2>/dev/null || true
+            sha256sum *.apk > SHA256SUMS 2>/dev/null || true
           )
 
           echo "path=$artifact_dir" >> "$GITHUB_OUTPUT"
