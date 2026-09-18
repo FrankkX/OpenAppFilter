@@ -64,7 +64,7 @@ jobs:
             cp -a "$GITHUB_WORKSPACE" "$package_dir/open-app-filter"
           fi
 
-      - name: Configure & Generate Toolchain
+      - name: Configure Target
         shell: bash
         run: |
           set -euo pipefail
@@ -88,6 +88,15 @@ jobs:
 
           # 自动计算补全依赖与编译符号表
           make defconfig
+
+      - name: Build Host Tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd istoreos_src
+
+          # 先编译 host 解压工具与依赖，防止出现 libdeflate-gzip 缺失
+          make tools/libdeflate/compile V=s -j$(nproc) || make tools/compile V=s -j$(nproc)
 
       - name: Compile OAF Packages
         shell: bash
