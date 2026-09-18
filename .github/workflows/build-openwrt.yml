@@ -18,8 +18,11 @@ on:
 permissions:
   contents: read
 
+# =========================================================
+# 日后更新 OpenWrt 版本时，仅需修改下方的 OPENWRT_VERSION 即可
+# =========================================================
 env:
-  OPENWRT_VERSION: 25.12.5
+  OPENWRT_VERSION: "25.12.5"
 
 jobs:
   select-platform:
@@ -192,23 +195,22 @@ jobs:
           [ -d "$GITHUB_WORKSPACE/oaf" ] && cp -a "$GITHUB_WORKSPACE/oaf" "$package_dir/"
           [ -d "$GITHUB_WORKSPACE/open-app-filter" ] && cp -a "$GITHUB_WORKSPACE/open-app-filter" "$package_dir/"
 
-      - name: Configure packages
+      - name: Configure packages (Fetch Official Buildinfo)
         env:
           SDK_DIR: ${{ steps.sdk.outputs.path }}
+          TARGET: ${{ matrix.target }}
+          SUBTARGET: ${{ matrix.subtarget }}
         shell: bash
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
 
-          # 提取 SDK 原厂 vermagic 签名，防止 make defconfig 时因加载外部依赖重新计算 Hash
-          VERMAGIC=""
-          if [ -f include/kernel-version.mk ]; then
-            VERMAGIC="$(grep -E '^STAMP_BUILT' include/kernel-version.mk | awk '{print $3}' || true)"
-          fi
-          if [ -z "$VERMAGIC" ] && [ -f .config ]; then
-            VERMAGIC="$(sed -ne 's/^CONFIG_EXTERNAL_KERNEL_TREE_VERMAGIC="\(.*\)"$/\1/p' .config || true)"
-          fi
+          # 1. 抓取官方固件发布时使用的全量内核种子 (config.buildinfo)
+          buildinfo_url="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET}/${SUBTARGET}/config.buildinfo"
+          echo "Fetching official target config.buildinfo from $buildinfo_url..."
+          curl --fail --location --retry 5 --retry-delay 5 -o .config "$buildinfo_url"
 
+          # 2. 追加 OAF 模块配置
           cat >> .config <<EOF
           CONFIG_PACKAGE_appfilter=m
           CONFIG_PACKAGE_kmod-oaf=m
@@ -217,11 +219,7 @@ jobs:
           CONFIG_PACKAGE_nginx=n
           EOF
 
-          if [ -n "$VERMAGIC" ]; then
-            echo "CONFIG_EXTERNAL_KERNEL_TREE_VERMAGIC=\"$VERMAGIC\"" >> .config
-            echo "Locking kernel vermagic to: $VERMAGIC"
-          fi
-
+          # 3. 基于全量种子重新生成配置，确保算出的 vermagic 与官方保持 100% 一致
           make defconfig
 
       - name: Compile APK packages
