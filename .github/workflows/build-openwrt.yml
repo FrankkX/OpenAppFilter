@@ -177,18 +177,15 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          # 仅更新并安装必要 Feed，避免 packages 的 install -a 触发无用工具链依赖
           ./scripts/feeds update base packages luci
           ./scripts/feeds install -a -p base
           ./scripts/feeds install -a -p luci
 
-          # 清理重名包冲突
           ./scripts/feeds uninstall open-app-filter || true
           ./scripts/feeds uninstall luci-app-oaf || true
           ./scripts/feeds uninstall oaf || true
           rm -rf package/feeds/packages/open-app-filter package/feeds/luci/luci-app-oaf
 
-          # 复制源码至 SDK package 目录
           package_dir="$SDK_DIR/package/OpenAppFilter"
           mkdir -p "$package_dir"
           [ -d "$GITHUB_WORKSPACE/luci-app-oaf" ] && cp -a "$GITHUB_WORKSPACE/luci-app-oaf" "$package_dir/"
@@ -203,13 +200,13 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          # 从 SDK 原始配置文件中提取官方预设的 vermagic 签名，防止 make defconfig 重新计算导致 ABI 偏离
+          # 提取 SDK 原厂 vermagic 签名，防止 make defconfig 时因加载外部依赖重新计算 Hash
           VERMAGIC=""
-          if [ -f .config ]; then
-            VERMAGIC="$(sed -ne 's/^CONFIG_EXTERNAL_KERNEL_TREE_VERMAGIC="\(.*\)"$/\1/p' .config || true)"
-          fi
-          if [ -z "$VERMAGIC" ] && [ -f include/kernel-version.mk ]; then
+          if [ -f include/kernel-version.mk ]; then
             VERMAGIC="$(grep -E '^STAMP_BUILT' include/kernel-version.mk | awk '{print $3}' || true)"
+          fi
+          if [ -z "$VERMAGIC" ] && [ -f .config ]; then
+            VERMAGIC="$(sed -ne 's/^CONFIG_EXTERNAL_KERNEL_TREE_VERMAGIC="\(.*\)"$/\1/p' .config || true)"
           fi
 
           cat >> .config <<EOF
@@ -235,7 +232,6 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          # 仅针对 OAF 子目录进行路径编译，避免构建 Host 端 LLVM/Rust 工具链
           for pkg in $(find package/OpenAppFilter -mindepth 1 -maxdepth 2 -name Makefile -exec dirname {} \;); do
             make -j$(nproc) V=s "${pkg}/compile"
           done
@@ -301,7 +297,6 @@ jobs:
             installer_script="$GITHUB_WORKSPACE/scripts/create-run-installer.sh"
           fi
 
-          # 使用 bash 命令显式调用打包脚本，解决 Permission denied 报错
           if [ -n "$installer_script" ]; then
             SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --format=%ct)" \
               bash "$installer_script" \
