@@ -177,18 +177,18 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          # 仅更新并安装必要的 Base 和 LuCI，不执行 packages 的全量 install -a，避开依赖树膨胀
+          # 仅更新并安装必要 Feed，跳过全量 packages 安装，规避工具链死循环
           ./scripts/feeds update base packages luci
           ./scripts/feeds install -a -p base
           ./scripts/feeds install -a -p luci
 
-          # 清理重名包，避免覆盖冲突
+          # 清理自带模块冲突
           ./scripts/feeds uninstall open-app-filter || true
           ./scripts/feeds uninstall luci-app-oaf || true
           ./scripts/feeds uninstall oaf || true
           rm -rf package/feeds/packages/open-app-filter package/feeds/luci/luci-app-oaf
 
-          # 复制应用源码
+          # 复制源码至 SDK package 路径
           package_dir="$SDK_DIR/package/OpenAppFilter"
           mkdir -p "$package_dir"
           [ -d "$GITHUB_WORKSPACE/luci-app-oaf" ] && cp -a "$GITHUB_WORKSPACE/luci-app-oaf" "$package_dir/"
@@ -208,6 +208,7 @@ jobs:
           CONFIG_PACKAGE_kmod-oaf=m
           CONFIG_PACKAGE_luci-app-oaf=m
           CONFIG_PACKAGE_luci-i18n-oaf-zh-cn=m
+          CONFIG_PACKAGE_nginx=n
           EOF
           make defconfig
 
@@ -219,7 +220,7 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          # 精准按路径编译，跳过无关 Host 工具链（如 LLVM/Rust）
+          # 按照路径精确编译，跳过无关 Host 工具构建
           for pkg in $(find package/OpenAppFilter -mindepth 1 -maxdepth 2 -name Makefile -exec dirname {} \;); do
             make -j$(nproc) V=s "${pkg}/compile"
           done
@@ -277,9 +278,18 @@ jobs:
           fi
 
           run_file="openappfilter-${oaf_version}-openwrt-${OPENWRT_VERSION}-${TARGET_LABEL}.run"
-          if [ -f "$GITHUB_WORKSPACE/scripts/create-run-installer.sh" ]; then
+          
+          # 兼容处理两个不同命名的打包脚本，并使用 bash 命令直接运行绕过权限问题
+          installer_script=""
+          if [ -f "$GITHUB_WORKSPACE/scripts/create-run-installer-openwrt.sh" ]; then
+            installer_script="$GITHUB_WORKSPACE/scripts/create-run-installer-openwrt.sh"
+          elif [ -f "$GITHUB_WORKSPACE/scripts/create-run-installer.sh" ]; then
+            installer_script="$GITHUB_WORKSPACE/scripts/create-run-installer.sh"
+          fi
+
+          if [ -n "$installer_script" ]; then
             SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --format=%ct)" \
-              "$GITHUB_WORKSPACE/scripts/create-run-installer-openwrt.sh" \
+              bash "$installer_script" \
                 --input "$apk_dir" \
                 --output "$artifact_dir/$run_file" \
                 --platform "$PLATFORM" \
