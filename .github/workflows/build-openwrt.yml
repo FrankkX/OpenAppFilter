@@ -1,6 +1,6 @@
 name: Build OpenWrt OAF packages
 
-run-name: Build OpenWrt ${{ env.OPENWRT_VERSION }} (${{ inputs.platform }})
+run-name: Build OpenWrt (${{ inputs.platform }})
 
 on:
   workflow_dispatch:
