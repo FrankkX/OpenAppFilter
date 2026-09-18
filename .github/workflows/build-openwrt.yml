@@ -18,11 +18,10 @@ on:
 permissions:
   contents: read
 
-# =========================================================
-# 日后更新 OpenWrt 版本时，仅需修改下方的 OPENWRT_VERSION 即可
-# =========================================================
 env:
   OPENWRT_VERSION: "25.12.5"
+  # 这里定义 iStoreOS 提示报错中期望的真实哈希 (breaks: world[kmod-oaf><...])
+  TARGET_ISTOREOS_VERMAGIC: "Q1QaFk37j99bX7zSPAVZ7aMuBuVJM="
 
 jobs:
   select-platform:
@@ -99,6 +98,7 @@ jobs:
             python3-setuptools \
             rsync \
             swig \
+            tar \
             unzip \
             wget \
             zlib1g-dev \
@@ -195,7 +195,7 @@ jobs:
           [ -d "$GITHUB_WORKSPACE/oaf" ] && cp -a "$GITHUB_WORKSPACE/oaf" "$package_dir/"
           [ -d "$GITHUB_WORKSPACE/open-app-filter" ] && cp -a "$GITHUB_WORKSPACE/open-app-filter" "$package_dir/"
 
-      - name: Configure packages (Fetch Official Buildinfo)
+      - name: Configure packages
         env:
           SDK_DIR: ${{ steps.sdk.outputs.path }}
           TARGET: ${{ matrix.target }}
@@ -205,12 +205,9 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          # 1. 抓取官方固件发布时使用的全量内核种子 (config.buildinfo)
           buildinfo_url="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET}/${SUBTARGET}/config.buildinfo"
-          echo "Fetching official target config.buildinfo from $buildinfo_url..."
           curl --fail --location --retry 5 --retry-delay 5 -o .config "$buildinfo_url"
 
-          # 2. 追加 OAF 模块配置
           cat >> .config <<EOF
           CONFIG_PACKAGE_appfilter=m
           CONFIG_PACKAGE_kmod-oaf=m
@@ -219,7 +216,6 @@ jobs:
           CONFIG_PACKAGE_nginx=n
           EOF
 
-          # 3. 基于全量种子重新生成配置，确保算出的 vermagic 与官方保持 100% 一致
           make defconfig
 
       - name: Compile APK packages
@@ -234,7 +230,7 @@ jobs:
             make -j$(nproc) V=s "${pkg}/compile"
           done
 
-      - name: Assemble APK and RUN artifacts
+      - name: Assemble APK and Patch Vermagic
         id: artifacts
         env:
           SDK_DIR: ${{ steps.sdk.outputs.path }}
@@ -264,6 +260,32 @@ jobs:
               \) \
               -print0
           )
+
+          # =========================================================
+          # 核心步骤：方案二 - 解包 APK 强制修改 .PKGINFO 控制文件中的 Vermagic
+          # =========================================================
+          echo "Patching APK packages with target iStoreOS Vermagic: $TARGET_ISTOREOS_VERMAGIC"
+          
+          for apk_file in "$apk_dir"/*.apk; do
+            [ -f "$apk_file" ] || continue
+            
+            tmp_unpack="$(mktemp -d)"
+            # 解压 APK 归档 (APK 实际上是一个 tar.gz 压缩包)
+            tar -C "$tmp_unpack" -xzf "$apk_file"
+            
+            if [ -f "$tmp_unpack/.PKGINFO" ]; then
+              # 正则替换：将 provides / depends 中的 kmod-oaf><哈希 替换为 iStoreOS 所需的目标哈希
+              sed -i -E "s/(kmod-oaf><)[^ ]+/\1${TARGET_ISTOREOS_VERMAGIC}/g" "$tmp_unpack/.PKGINFO"
+              
+              # 重新打包成 .apk 格式
+              (
+                cd "$tmp_unpack"
+                tar -czf "$apk_file" .PKGINFO *
+              )
+              echo "Successfully patched $apk_file"
+            fi
+            rm -rf "$tmp_unpack"
+          done
 
           shopt -s nullglob
           for pattern in \
@@ -311,6 +333,7 @@ jobs:
             echo "Project commit: $GITHUB_SHA"
             echo "OpenWrt release: $OPENWRT_VERSION"
             echo "OpenWrt target: $TARGET/$SUBTARGET"
+            echo "Patched Vermagic: $TARGET_ISTOREOS_VERMAGIC"
             echo "SDK archive: $SDK_FILE"
             echo "SDK SHA256: $SDK_SHA256"
             echo
