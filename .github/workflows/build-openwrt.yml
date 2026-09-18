@@ -177,18 +177,18 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          # 仅更新并安装必要 Feed，跳过全量 packages 安装，规避工具链死循环
+          # 仅更新并安装必要 Feed，避免 packages 的 install -a 触发无用工具链依赖
           ./scripts/feeds update base packages luci
           ./scripts/feeds install -a -p base
           ./scripts/feeds install -a -p luci
 
-          # 清理自带模块冲突
+          # 清理重名包冲突
           ./scripts/feeds uninstall open-app-filter || true
           ./scripts/feeds uninstall luci-app-oaf || true
           ./scripts/feeds uninstall oaf || true
           rm -rf package/feeds/packages/open-app-filter package/feeds/luci/luci-app-oaf
 
-          # 复制源码至 SDK package 路径
+          # 复制源码至 SDK package 目录
           package_dir="$SDK_DIR/package/OpenAppFilter"
           mkdir -p "$package_dir"
           [ -d "$GITHUB_WORKSPACE/luci-app-oaf" ] && cp -a "$GITHUB_WORKSPACE/luci-app-oaf" "$package_dir/"
@@ -203,13 +203,28 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          cat >> .config <<'EOF'
+          # 从 SDK 原始配置文件中提取官方预设的 vermagic 签名，防止 make defconfig 重新计算导致 ABI 偏离
+          VERMAGIC=""
+          if [ -f .config ]; then
+            VERMAGIC="$(sed -ne 's/^CONFIG_EXTERNAL_KERNEL_TREE_VERMAGIC="\(.*\)"$/\1/p' .config || true)"
+          fi
+          if [ -z "$VERMAGIC" ] && [ -f include/kernel-version.mk ]; then
+            VERMAGIC="$(grep -E '^STAMP_BUILT' include/kernel-version.mk | awk '{print $3}' || true)"
+          fi
+
+          cat >> .config <<EOF
           CONFIG_PACKAGE_appfilter=m
           CONFIG_PACKAGE_kmod-oaf=m
           CONFIG_PACKAGE_luci-app-oaf=m
           CONFIG_PACKAGE_luci-i18n-oaf-zh-cn=m
           CONFIG_PACKAGE_nginx=n
           EOF
+
+          if [ -n "$VERMAGIC" ]; then
+            echo "CONFIG_EXTERNAL_KERNEL_TREE_VERMAGIC=\"$VERMAGIC\"" >> .config
+            echo "Locking kernel vermagic to: $VERMAGIC"
+          fi
+
           make defconfig
 
       - name: Compile APK packages
@@ -220,7 +235,7 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          # 按照路径精确编译，跳过无关 Host 工具构建
+          # 仅针对 OAF 子目录进行路径编译，避免构建 Host 端 LLVM/Rust 工具链
           for pkg in $(find package/OpenAppFilter -mindepth 1 -maxdepth 2 -name Makefile -exec dirname {} \;); do
             make -j$(nproc) V=s "${pkg}/compile"
           done
@@ -278,8 +293,7 @@ jobs:
           fi
 
           run_file="openappfilter-${oaf_version}-openwrt-${OPENWRT_VERSION}-${TARGET_LABEL}.run"
-          
-          # 兼容处理两个不同命名的打包脚本，并使用 bash 命令直接运行绕过权限问题
+
           installer_script=""
           if [ -f "$GITHUB_WORKSPACE/scripts/create-run-installer-openwrt.sh" ]; then
             installer_script="$GITHUB_WORKSPACE/scripts/create-run-installer-openwrt.sh"
@@ -287,6 +301,7 @@ jobs:
             installer_script="$GITHUB_WORKSPACE/scripts/create-run-installer.sh"
           fi
 
+          # 使用 bash 命令显式调用打包脚本，解决 Permission denied 报错
           if [ -n "$installer_script" ]; then
             SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --format=%ct)" \
               bash "$installer_script" \
