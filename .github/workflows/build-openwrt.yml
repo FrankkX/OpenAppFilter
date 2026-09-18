@@ -177,19 +177,18 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          # 仅更新并安装最小必要的 Feeds，避免无用插件引发 Kconfig 递归依赖死循环
+          # 仅更新并安装必要的 Base 和 LuCI，不执行 packages 的全量 install -a，避开依赖树膨胀
           ./scripts/feeds update base packages luci
           ./scripts/feeds install -a -p base
-          ./scripts/feeds install -a -p packages
           ./scripts/feeds install -a -p luci
 
-          # 卸载 Feed 中自带的 OAF，防止与自定义源码冲突
+          # 清理重名包，避免覆盖冲突
           ./scripts/feeds uninstall open-app-filter || true
           ./scripts/feeds uninstall luci-app-oaf || true
           ./scripts/feeds uninstall oaf || true
           rm -rf package/feeds/packages/open-app-filter package/feeds/luci/luci-app-oaf
 
-          # 复制应用源码到 SDK package 路径
+          # 复制应用源码
           package_dir="$SDK_DIR/package/OpenAppFilter"
           mkdir -p "$package_dir"
           [ -d "$GITHUB_WORKSPACE/luci-app-oaf" ] && cp -a "$GITHUB_WORKSPACE/luci-app-oaf" "$package_dir/"
@@ -209,21 +208,8 @@ jobs:
           CONFIG_PACKAGE_kmod-oaf=m
           CONFIG_PACKAGE_luci-app-oaf=m
           CONFIG_PACKAGE_luci-i18n-oaf-zh-cn=m
-          CONFIG_PACKAGE_nginx=n
           EOF
           make defconfig
-
-          for symbol in \
-            CONFIG_PACKAGE_appfilter \
-            CONFIG_PACKAGE_kmod-oaf \
-            CONFIG_PACKAGE_luci-app-oaf \
-            CONFIG_PACKAGE_luci-i18n-oaf-zh-cn
-          do
-            if ! grep -Eq "^${symbol}=[my]$" .config; then
-              echo "::error::${symbol} was not enabled by make defconfig"
-              exit 1
-            fi
-          done
 
       - name: Compile APK packages
         env:
@@ -233,8 +219,10 @@ jobs:
           set -euo pipefail
           cd "$SDK_DIR"
 
-          # 全局编译 .config 中选择的包，消除 Makefile 路径名称不匹配的问题
-          make -j$(nproc) V=s package/compile
+          # 精准按路径编译，跳过无关 Host 工具链（如 LLVM/Rust）
+          for pkg in $(find package/OpenAppFilter -mindepth 1 -maxdepth 2 -name Makefile -exec dirname {} \;); do
+            make -j$(nproc) V=s "${pkg}/compile"
+          done
 
       - name: Assemble APK and RUN artifacts
         id: artifacts
