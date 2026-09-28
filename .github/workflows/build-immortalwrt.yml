@@ -266,12 +266,7 @@ jobs:
             cp "$package" "$apk_dir/"
           done < <(
             find "$SDK_DIR/bin" -type f \
-              \( \
-                -name 'appfilter-*.apk' -o \
-                -name 'kmod-oaf-*.apk' -o \
-                -name 'luci-app-oaf-*.apk' -o \
-                -name 'luci-i18n-oaf-*.apk' \
-              \) \
+              \( \                 -name 'appfilter-*.apk' -o \                 -name 'kmod-oaf-*.apk' -o \                 -name 'luci-app-oaf-*.apk' -o \                 -name 'luci-i18n-oaf-*.apk' \               \) \
               -print0
           )
 
@@ -284,7 +279,7 @@ jobs:
           do
             matches=("$apk_dir"/$pattern)
             if [[ "${#matches[@]}" -ne 1 ]]; then
-              echo "::error::Expected one $pattern package, found ${#matches[@]}"
+              echo "::error::Expected one $pattern package, found${#matches[@]}"
               exit 1
             fi
           done
@@ -297,6 +292,8 @@ jobs:
             echo "::error::Unable to read the OAF package version"
             exit 1
           fi
+
+          chmod +x "$GITHUB_WORKSPACE/scripts/create-run-installer.sh"
 
           run_file="openappfilter-${oaf_version}-immortalwrt-${IMMORTALWRT_VERSION}-${TARGET_LABEL}.run"
           SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --format=%ct)" \
