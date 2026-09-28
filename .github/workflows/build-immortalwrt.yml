@@ -262,13 +262,9 @@ jobs:
           apk_dir="$artifact_dir/apk"
           mkdir -p "$apk_dir"
 
-          while IFS= read -r -d '' package; do
-            cp "$package" "$apk_dir/"
-          done < <(
-            find "$SDK_DIR/bin" -type f \
-              \( \                 -name 'appfilter-*.apk' -o \                 -name 'kmod-oaf-*.apk' -o \                 -name 'luci-app-oaf-*.apk' -o \                 -name 'luci-i18n-oaf-*.apk' \               \) \
-              -print0
-          )
+          find "$SDK_DIR/bin" -type f -name '*.apk' \
+            \(-name 'appfilter-*.apk' -o -name 'kmod-oaf-*.apk' -o -name 'luci-app-oaf-*.apk' -o -name 'luci-i18n-oaf-*.apk'\) \
+            -exec cp -t "$apk_dir/" {} +
 
           shopt -s nullglob
           for pattern in \
