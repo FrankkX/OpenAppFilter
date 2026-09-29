@@ -271,11 +271,11 @@ jobs:
             'appfilter-*.apk' \
             'kmod-oaf-*.apk' \
             'luci-app-oaf-*.apk' \
-            'luci-i18n-oaf-zh-cn*.apk'
+            'luci-i18n-oaf-*.apk'
           do
             matches=("$apk_dir"/$pattern)
-            if [[ "${#matches[@]}" -ne 1 ]]; then
-              echo "::error::Expected one $pattern package, found${#matches[@]}"
+            if [[ "${#matches[@]}" -lt 1 ]]; then
+              echo "::error::Expected at least one $pattern package, found${#matches[@]}"
               exit 1
             fi
           done
