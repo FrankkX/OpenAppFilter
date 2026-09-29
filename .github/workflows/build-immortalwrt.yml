@@ -262,34 +262,50 @@ jobs:
           apk_dir="$artifact_dir/apk"
           mkdir -p "$apk_dir"
 
-          # 搜集 SDK 生成的所有 apk 文件（支持 bin/ 目录下的所有子目录）
-          find "$SDK_DIR/bin" -type f -name '*.apk' -exec cp -t "$apk_dir/" {} +
+          while IFS= read -r -d '' package; do
+            cp "$package" "$apk_dir/"
+          done < <(
+            find "$SDK_DIR/bin" -type f \
+              \( \
+                -name 'appfilter-*.apk' -o \
+                -name 'kmod-oaf-*.apk' -o \
+                -name 'luci-app-oaf-*.apk' -o \
+                -name 'luci-i18n-oaf-*.apk' \
+              \) \
+              -print0
+          )
 
-          oaf_version="unknown"
-          if [ -f "$GITHUB_WORKSPACE/open-app-filter/Makefile" ]; then
-            oaf_version="$(awk -F ':=' '/^PKG_VERSION:=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$GITHUB_WORKSPACE/open-app-filter/Makefile")"
-          elif [ -f "$GITHUB_WORKSPACE/Makefile" ]; then
-            oaf_version="$(awk -F ':=' '/^PKG_VERSION:=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' "$GITHUB_WORKSPACE/Makefile")"
+          shopt -s nullglob
+          for pattern in \
+            'appfilter-*.apk' \
+            'kmod-oaf-*.apk' \
+            'luci-app-oaf-*.apk' \
+            'luci-i18n-oaf-zh-cn*.apk'
+          do
+            matches=("$apk_dir"/$pattern)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "::error::Expected one $pattern package, found ${#matches[@]}"
+              exit 1
+            fi
+          done
+
+          oaf_version="$(
+            awk -F ':=' '/^PKG_VERSION:=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' \
+              "$GITHUB_WORKSPACE/open-app-filter/Makefile"
+          )"
+          if [[ -z "$oaf_version" ]]; then
+            echo "::error::Unable to read the OAF package version"
+            exit 1
           fi
 
           run_file="openappfilter-${oaf_version}-immortalwrt-${IMMORTALWRT_VERSION}-${TARGET_LABEL}.run"
-          
-          installer_script=""
-          if [ -f "$GITHUB_WORKSPACE/scripts/create-run-installer-immortalwrt.sh" ]; then
-            installer_script="$GITHUB_WORKSPACE/scripts/create-run-installer-immortalwrt.sh"
-          elif [ -f "$GITHUB_WORKSPACE/scripts/create-run-installer.sh" ]; then
-            installer_script="$GITHUB_WORKSPACE/scripts/create-run-installer.sh"
-          fi
-
-          if [ -n "$installer_script" ]; then
-            SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --format=%ct)" \
-              bash "$installer_script" \
-                --input "$apk_dir" \
-                --output "$artifact_dir/$run_file" \
-                --platform "$PLATFORM" \
-                --release "$IMMORTALWRT_VERSION" \
-                --target "$TARGET/$SUBTARGET"
-          fi
+          SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --format=%ct)" \
+            "$GITHUB_WORKSPACE/scripts/create-run-installer.sh" \
+              --input "$apk_dir" \
+              --output "$artifact_dir/$run_file" \
+              --platform "$PLATFORM" \
+              --release "$IMMORTALWRT_VERSION" \
+              --target "$TARGET/$SUBTARGET"
 
           {
             echo "Project: OpenAppFilter"
@@ -312,6 +328,14 @@ jobs:
           )
 
           echo "path=$artifact_dir" >> "$GITHUB_OUTPUT"
+          {
+            echo "### $PLATFORM build"
+            echo
+            echo "- ImmortalWrt target: \`$TARGET/$SUBTARGET\`"
+            echo "- RUN installer: \`$run_file\`"
+            echo "- APK packages:"
+            find "$apk_dir" -maxdepth 1 -type f -name '*.apk' -printf '  - `%f`\n' | sort
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
